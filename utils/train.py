@@ -159,6 +159,10 @@ def main():
     config = builder.config_from_argparse(parser)
     config["model_class"] = mod_cls
     set_seed(config)
+    print(config)
+    print("n_epochs", config["n_epochs"])
+    print("data_folder", config["data_folder"])
+    print("gpu_no", config["gpu_no"])
     if config["mode"] == "train":
         train(config)
     elif config["mode"] == "eval":

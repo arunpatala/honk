@@ -1,0 +1,1 @@
+python -m utils.train --wanted_words yes no up down left right on off stop go --dev_every 1 --n_labels 12 --n_epochs 25 --weight_decay 0.00001 --lr 0.1 0.01 0.001 --schedule 3000 6000 --model res26 --data_folder train --gpu_no 0
