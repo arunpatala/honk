@@ -242,6 +242,7 @@ def main():
     set_seed(config)
     print(config)
     print("n_epochs", config["n_epochs"])
+    print("seed", config["seed"])
     print("data_folder", config["data_folder"])
     print("gpu_no", config["gpu_no"])
     if config["mode"] == "train":
