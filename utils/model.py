@@ -332,8 +332,11 @@ class SpeechDataset(data.Dataset):
                     continue
                 if config["group_speakers_by_id"]:
                     hashname = re.sub(r"_nohash_.*$", "", filename)
+                    bucket = int(hashlib.sha1(hashname.encode()).hexdigest(), 16)
+                else: bucket = int(hashlib.sha1(wav_name.encode()).hexdigest(), 16)
+
                 max_no_wavs = 2**27 - 1
-                bucket = int(hashlib.sha1(hashname.encode()).hexdigest(), 16)
+                #bucket = int(hashlib.sha1(hashname.encode()).hexdigest(), 16)
                 bucket = (bucket % (max_no_wavs + 1)) * (100. / max_no_wavs)
                 if bucket < dev_pct:
                     tag = DatasetType.DEV
@@ -366,6 +369,11 @@ class SpeechDataset(data.Dataset):
 
     def __len__(self):
         return len(self.audio_labels) + self.n_silence
+
+    
+    def sorted(self):
+        self.audio_files = sorted(self.audio_files)
+        return self  
 
 _configs = {
     ConfigType.CNN_TRAD_POOL2.value: dict(dropout_prob=0.5, height=101, width=40, n_labels=4, n_feature_maps1=64,

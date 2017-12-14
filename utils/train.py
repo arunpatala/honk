@@ -3,6 +3,7 @@ import argparse
 import os
 import random
 import sys
+import csv
 
 from torch.autograd import Variable
 import numpy as np
@@ -53,6 +54,51 @@ def set_seed(config):
     if not config["no_cuda"]:
         torch.cuda.manual_seed(seed)
     random.seed(seed)
+
+
+def submit(config, model=None, test_loader=None, output="sub.csv", log_dir=None):
+    if not test_loader:
+        config['test_pct'] = 100
+        config['train_pct'] = 0
+        config['dev_pct'] = 0
+        config["group_speakers_by_id"] = False
+        config["silence_prob"] = 0
+        config["data_folder"] = config["test_folder"]
+        output = os.path.join(config["log_dir"], output)
+        _, _, test_set = mod.SpeechDataset.splits(config)
+        test_loader = data.DataLoader(test_set.sorted(), batch_size=config["batch_size"], shuffle=False)
+    if not config["no_cuda"]:
+        torch.cuda.set_device(config["gpu_no"])
+    if not model:
+        model = config["model_class"](config)
+        model.load(config["input_file"])
+    if not config["no_cuda"]:
+        torch.cuda.set_device(config["gpu_no"])
+        model.cuda()
+    model.eval()
+    results = []
+    total = 0
+
+    print(len(test_set), len(test_set.audio_files))
+    commands = ["silence", "unknown"]
+    commands.extend(config["wanted_words"])
+
+    with open(output, 'w', newline='') as csvfile:
+        csvwriter = csv.writer(csvfile, delimiter=',')
+        csvwriter.writerow(['fname', 'label', 'score'])
+        for model_in, labels in tqdm(test_loader):
+            model_in = Variable(model_in, requires_grad=False)
+            if not config["no_cuda"]:
+                model_in = model_in.cuda()
+            scores = model(model_in)
+            predictions = F.softmax(scores.squeeze(0).cpu()).data
+            #results.append(predictions) 
+            scores, results = torch.max(predictions, 1)
+            for i in range(len(results)):
+                 csvwriter.writerow([test_set.audio_files[total+i].split("/")[-1], commands[results[i]], scores[i]] + predictions[i].numpy().tolist() )
+            total += model_in.size(0)
+
+
 
 def evaluate(config, model=None, test_loader=None, epoch=0, log_dir=None):
     if not test_loader:
@@ -225,10 +271,13 @@ def train(config):
 def main():
     output_file = "model.pt"
     parser = argparse.ArgumentParser()
+    print(parser)
     parser.add_argument("--model", choices=[x.value for x in list(mod.ConfigType)], default="cnn-trad-pool2", type=str)
+    parser.add_argument("--mode", choices=["train", "evaluate", "submit"], default="train", type=str)
     config, _ = parser.parse_known_args()
+    print(config)
 
-    global_config = dict(log_dir="tmp", no_cuda=False, n_epochs=500, lr=[0.001], schedule=[np.inf], batch_size=64, dev_every=10, seed=0,
+    global_config = dict(test_folder="test", mode=config.mode, log_dir="tmp", no_cuda=False, n_epochs=500, lr=[0.001], schedule=[np.inf], batch_size=64, dev_every=10, seed=0,
         use_nesterov=False, input_file="", output_file=output_file, gpu_no=1, cache_size=32768, momentum=0.9, weight_decay=0.00001)
     mod_cls = mod.find_model(config.model)
     builder = ConfigBuilder(
@@ -236,7 +285,7 @@ def main():
         mod.SpeechDataset.default_config(),
         global_config)
     parser = builder.build_argparse()
-    parser.add_argument("--mode", choices=["train", "eval"], default="train", type=str)
+    #parser.add_argument("--mode", choices=["train", "eval"], default="train", type=str)
     config = builder.config_from_argparse(parser)
     config["model_class"] = mod_cls
     set_seed(config)
@@ -245,10 +294,29 @@ def main():
     print("seed", config["seed"])
     print("data_folder", config["data_folder"])
     print("gpu_no", config["gpu_no"])
+    print("mode", config["mode"])
     if config["mode"] == "train":
         train(config)
-    elif config["mode"] == "eval":
-        evaluate(config)
+    elif config["mode"] == "evaluate":
+        log_dir = config["log_dir"]
+        train_set, dev_set, test_set = mod.SpeechDataset.splits(config)
+        model = config["model_class"](config)
+        #print(config["input_file"])
+        if config["input_file"]:
+            model.load(config["input_file"])
+        else: model.load(log_dir+"/BEST_model.pt")
+        if not config["no_cuda"]:
+            torch.cuda.set_device(config["gpu_no"])
+            model.cuda()
+        #print(a+b)
+        test_loader = data.DataLoader(test_set, batch_size=min(len(test_set), 16), shuffle=False)
+        evaluate(config, model, test_loader, epoch="eval", log_dir=log_dir)
+        #evaluate(config)
+    elif config["mode"] == "submit":
+        log_dir = config["log_dir"]
+        if not config["input_file"]:
+            config['input_file'] = (log_dir+"/BEST_model.pt")
+        submit(config, output="submit.csv", log_dir=log_dir)
 
 if __name__ == "__main__":
     main()
