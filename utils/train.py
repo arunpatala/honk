@@ -9,6 +9,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.data as data
+from tqdm import tqdm
+from tensorboardX import SummaryWriter
 
 from . import model as mod
 
@@ -40,7 +42,7 @@ def print_eval(name, scores, labels, loss, end="\n"):
     batch_size = labels.size(0)
     accuracy = (torch.max(scores, 1)[1].view(batch_size).data == labels.data).sum() / batch_size
     loss = loss.cpu().data.numpy()[0]
-    print("{} accuracy: {:>5}, loss: {:<25}".format(name, accuracy, loss), end=end)
+    #print("{} accuracy: {:>5}, loss: {:<25}".format(name, accuracy, loss), end=end)
     return accuracy
 
 def set_seed(config):
@@ -78,8 +80,10 @@ def evaluate(config, model=None, test_loader=None):
         results.append(print_eval("test", scores, labels, loss) * model_in.size(0))
         total += model_in.size(0)
     print("final test accuracy: {}".format(sum(results) / total))
+    return sum(results) / total
 
 def train(config):
+    log_dir = config["log_dir"]
     train_set, dev_set, test_set = mod.SpeechDataset.splits(config)
     model = config["model_class"](config)
     if config["input_file"]:
@@ -98,9 +102,12 @@ def train(config):
     dev_loader = data.DataLoader(dev_set, batch_size=min(len(dev_set), 16), shuffle=True)
     test_loader = data.DataLoader(test_set, batch_size=min(len(test_set), 16), shuffle=True)
     step_no = 0
-
+    writer = SummaryWriter(log_dir)
     for epoch_idx in range(config["n_epochs"]):
-        for batch_idx, (model_in, labels) in enumerate(train_loader):
+        print("epoch", epoch_idx, config["n_epochs"])
+        writer.add_scalar('data/iter', epoch_idx, epoch_idx)
+        accs = []
+        for batch_idx, (model_in, labels) in enumerate(tqdm(train_loader)):
             model.train()
             optimizer.zero_grad()
             if not config["no_cuda"]:
@@ -118,12 +125,14 @@ def train(config):
                 print("changing learning rate to {}".format(config["lr"][sched_idx]))
                 optimizer = torch.optim.SGD(model.parameters(), lr=config["lr"][sched_idx],
                     nesterov=config["use_nesterov"], momentum=config["momentum"], weight_decay=config["weight_decay"])
-            print_eval("train step #{}".format(step_no), scores, labels, loss)
-
+            accs.append(print_eval("train step #{}".format(step_no), scores, labels, loss))
+        tacc = np.mean(accs)
+        print("train accuracy: {}".format(tacc))
+        writer.add_scalar('data/tacc', tacc, epoch_idx)
         if epoch_idx % config["dev_every"] == config["dev_every"] - 1:
             model.eval()
             accs = []
-            for model_in, labels in dev_loader:
+            for model_in, labels in tqdm(dev_loader):
                 model_in = Variable(model_in, requires_grad=False)
                 if not config["no_cuda"]:
                     model_in = model_in.cuda()
@@ -133,13 +142,17 @@ def train(config):
                 loss = criterion(scores, labels)
                 loss_numeric = loss.cpu().data.numpy()[0]
                 accs.append(print_eval("dev", scores, labels, loss))
-            avg_acc = np.mean(accs)
-            print("final dev accuracy: {}".format(avg_acc))
-            if avg_acc > max_acc:
+            vacc = np.mean(accs)
+            print("final dev accuracy: {}".format(vacc))
+            writer.add_scalar('data/vacc', vacc, epoch_idx)
+            if vacc > max_acc:
                 print("saving best model...")
-                max_acc = avg_acc
+                max_acc = vacc
                 model.save(config["output_file"])
-    evaluate(config, model, test_loader)
+        ttacc = evaluate(config, model, test_loader)
+        writer.add_scalar('data/ttacc', ttacc, epoch_idx)
+        writer.add_scalars('data/acc', {"tacc": tacc, "vacc": vacc, "ttacc": ttacc}, epoch_idx)
+        writer.export_scalars_to_json(log_dir+"/all_scalars.json")
 
 def main():
     output_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "model", "model.pt")
@@ -147,7 +160,7 @@ def main():
     parser.add_argument("--model", choices=[x.value for x in list(mod.ConfigType)], default="cnn-trad-pool2", type=str)
     config, _ = parser.parse_known_args()
 
-    global_config = dict(no_cuda=False, n_epochs=500, lr=[0.001], schedule=[np.inf], batch_size=64, dev_every=10, seed=0,
+    global_config = dict(log_dir="tmp", no_cuda=False, n_epochs=500, lr=[0.001], schedule=[np.inf], batch_size=64, dev_every=10, seed=0,
         use_nesterov=False, input_file="", output_file=output_file, gpu_no=1, cache_size=32768, momentum=0.9, weight_decay=0.00001)
     mod_cls = mod.find_model(config.model)
     builder = ConfigBuilder(
