@@ -13,8 +13,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data
-
+from random import shuffle
 from .manage_audio import preprocess_audio
+from collections import Counter
 
 class SimpleCache(dict):
     def __init__(self, limit):
@@ -220,11 +221,18 @@ def print_eval(name, scores, labels, loss, end="\n"):
 class SpeechDataset(data.Dataset):
     LABEL_SILENCE = "__silence__"
     LABEL_UNKNOWN = "__unknown__"
-    def __init__(self, data, set_type, config):
+    def __init__(self, data, uk_data, set_type, config):
         super().__init__()
+        self.uk_data = uk_data
+        print(set_type, set(list(self.uk_data.values())))
+
+        c = Counter(list(self.uk_data.values()))
+
+        print(c)
         self.audio_files = list(data.keys())
         self.set_type = set_type
         self.audio_labels = list(data.values())
+        print(np.bincount(np.array(self.audio_labels)))
         config["bg_noise_files"] = list(filter(lambda x: x.endswith("wav"), config.get("bg_noise_files", [])))
         self.bg_noise_audio = [librosa.core.load(file, sr=16000)[0] for file in config["bg_noise_files"]]
         self.unknown_prob = config["unknown_prob"]
@@ -237,8 +245,19 @@ class SpeechDataset(data.Dataset):
         self.n_mels = config["n_mels"]
         self._audio_cache = SimpleCache(config["cache_size"])
         self._file_cache = SimpleCache(config["cache_size"])
+
         n_unk = len(list(filter(lambda x: x == 1, self.audio_labels)))
-        self.n_silence = int(self.silence_prob * (len(self.audio_labels) - n_unk))
+        print(set_type, self.unknown_prob)
+        self.uk_audio_files = [ k for (k,v) in data.items() if v == 1 ]
+        self.n_unknown = int( self.unknown_prob * (len(self.audio_labels)-len(self.uk_audio_files)))
+        
+        #shuffle(self.uk_audio_files)
+        self.uk_index = 0
+        self.n_silence = int(self.silence_prob * (len(self.audio_labels)-len(self.uk_audio_files)))
+
+        self.audio_files = [ k for (k,v) in data.items() if v != 1 ]
+        self.audio_labels = [ v for (k,v) in data.items() if v != 1 ]
+
 
     @staticmethod
     def default_config():
@@ -345,10 +364,11 @@ class SpeechDataset(data.Dataset):
         self.audio_labels = all_preds.tolist()[:len(self.audio_labels)]
 
     @classmethod
-    def splits(cls, config):
+    def splits(cls, config, seed=1):
         folder = config["data_folder"]
         wanted_words = config["wanted_words"]
         unknown_prob = config["unknown_prob"]
+        print("unknown_prob", unknown_prob)
         train_pct = config["train_pct"]
         dev_pct = config["dev_pct"]
         test_pct = config["test_pct"]
@@ -356,6 +376,7 @@ class SpeechDataset(data.Dataset):
         words = {word: i + 2 for i, word in enumerate(wanted_words)}
         words.update({cls.LABEL_SILENCE:0, cls.LABEL_UNKNOWN:1})
         sets = [{}, {}, {}]
+        uk_sets = [{}, {}, {}]
         unknowns = [0] * 3
         bg_noise_files = []
         unknown_files = []
@@ -363,6 +384,7 @@ class SpeechDataset(data.Dataset):
         for folder_name in os.listdir(folder):
             path_name = os.path.join(folder, folder_name)
             is_bg_noise = False
+            ukbucket = None
             if os.path.isfile(path_name):
                 continue
             if folder_name in words:
@@ -370,8 +392,13 @@ class SpeechDataset(data.Dataset):
             elif folder_name == "_background_noise_":
                 is_bg_noise = True
             else:
+                ukbucket = int(hashlib.sha1((folder_name+str(seed)).encode()).hexdigest(), 16)
                 label = words[cls.LABEL_UNKNOWN]
+                max_no_wavs = 2**27 - 1
+                ukbucket = (ukbucket % (max_no_wavs + 1)) * (100. / max_no_wavs)
 
+            print(folder_name, ukbucket)
+            #ukbucket = None
             for filename in os.listdir(path_name):
                 wav_name = os.path.join(path_name, filename)
                 if is_bg_noise and os.path.isfile(wav_name):
@@ -379,24 +406,36 @@ class SpeechDataset(data.Dataset):
                     continue
                 elif label == words[cls.LABEL_UNKNOWN]:
                     unknown_files.append(wav_name)
-                    continue
+
+                    
                 if config["group_speakers_by_id"]:
                     hashname = re.sub(r"_nohash_.*$", "", filename)
-                    bucket = int(hashlib.sha1(hashname.encode()).hexdigest(), 16)
-                else: bucket = int(hashlib.sha1(wav_name.encode()).hexdigest(), 16)
+                    bucket = int(hashlib.sha1((hashname+str(seed)).encode()).hexdigest(), 16)
+                else: bucket = int(hashlib.sha1((wav_name+str(seed)).encode()).hexdigest(), 16)
 
                 max_no_wavs = 2**27 - 1
                 #bucket = int(hashlib.sha1(hashname.encode()).hexdigest(), 16)
                 bucket = (bucket % (max_no_wavs + 1)) * (100. / max_no_wavs)
-                if bucket < dev_pct:
-                    tag = DatasetType.DEV
-                elif bucket < test_pct + dev_pct:
-                    tag = DatasetType.TEST
+                if ukbucket:
+                    if ukbucket < 50:
+                        tag = DatasetType.TRAIN
+                    else:
+                        if bucket < 50:
+                            tag = DatasetType.DEV
+                        else: tag = DatasetType.TEST 
+                        
+                    uk_sets[tag.value][wav_name] = folder_name
                 else:
-                    tag = DatasetType.TRAIN
+                    if bucket < dev_pct:
+                        tag = DatasetType.DEV
+                    elif bucket < test_pct + dev_pct:
+                        tag = DatasetType.TEST
+                    else:
+                        tag = DatasetType.TRAIN
                 sets[tag.value][wav_name] = label
+                
 
-        for tag in range(len(sets)):
+        """for tag in range(len(sets)):
             unknowns[tag] = int(unknown_prob * len(sets[tag]))
         random.shuffle(unknown_files)
         a = 0
@@ -405,20 +444,28 @@ class SpeechDataset(data.Dataset):
             unk_dict = {u: words[cls.LABEL_UNKNOWN] for u in unknown_files[a:b]}
             dataset.update(unk_dict)
             a = b
+        """
 
         train_cfg = ChainMap(dict(bg_noise_files=bg_noise_files), config)
         test_cfg = ChainMap(dict(noise_prob=0), config)
-        datasets = (cls(sets[0], DatasetType.TRAIN, train_cfg), cls(sets[1], DatasetType.DEV, test_cfg),
-                cls(sets[2], DatasetType.TEST, test_cfg))
+        datasets = (cls(sets[0], uk_sets[0], DatasetType.TRAIN, train_cfg), cls(sets[1], uk_sets[1], DatasetType.DEV, test_cfg),
+                cls(sets[2], uk_sets[2], DatasetType.TEST, test_cfg))
         return datasets
 
     def __getitem__(self, index):
         if index >= len(self.audio_labels):
-            return self.preprocess(None, silence=True), 0
+            if index >= len(self.audio_labels) + self.n_unknown:
+                return self.preprocess(None, silence=True), 0
+            else: 
+                ret = self.preprocess(self.uk_audio_files[self.uk_index]), 1
+                self.uk_index = (self.uk_index + 1)% self.n_unknown
+                return ret
+
+
         return self.preprocess(self.audio_files[index]), self.audio_labels[index]
 
     def __len__(self):
-        return len(self.audio_labels) + self.n_silence
+        return len(self.audio_labels) + self.n_silence + self.n_unknown
 
     
     def sorted(self):

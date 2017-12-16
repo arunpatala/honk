@@ -155,7 +155,6 @@ def train(config):
     train_set, dev_set, test_set = mod.SpeechDataset.splits(config)
 
     
-    
     model = config["model_class"](config)
     if config["input_file"]:
         model.load(config["input_file"])
@@ -217,6 +216,7 @@ def train(config):
         #print("all_scores", all_scores.shape)
 
         all_labels = np.concatenate(all_labels, axis=0)
+        print("train counts", np.bincount(all_labels))
         #print("all_labels", all_labels.shape)
         all_preds = np.argmax(all_scores, axis=1)
 
@@ -256,10 +256,11 @@ def train(config):
             vloss= float(np.mean(losses))
             all_scores = np.concatenate(all_scores,axis=0)
             all_labels = np.concatenate(all_labels, axis=0)
+            print("val counts", np.bincount(all_labels))
             all_preds = np.argmax(all_scores, axis=1)
             all_sl = np.concatenate([np.expand_dims(all_labels,axis=-1), np.expand_dims(all_preds, axis=-1), all_scores], axis=-1)
             np.savetxt(log_dir+'/val{}.csv'.format(epoch_idx), all_sl, delimiter=',', fmt='%.3f')
-        
+            
             print("final dev accuracy: {}".format(vacc))
             print("final dev loss: {}".format(vloss))
             writer.add_scalar('data/vacc', vacc, epoch_idx)
