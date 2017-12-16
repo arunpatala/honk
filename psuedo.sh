@@ -1,0 +1,1 @@
+python -m utils.train --psuedo True --wanted_words yes no up down left right on off stop go --dev_every 1 --n_labels 12 --n_epochs 12 --weight_decay 0.00001 --lr 0.01 0.001 --schedule 3000 6000  --data_folder train --gpu_no 0 --seed 1 --log_dir $*

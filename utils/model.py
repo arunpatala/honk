@@ -4,7 +4,7 @@ import math
 import os
 import random
 import re
-
+from tqdm import tqdm
 from chainmap import ChainMap
 from torch.autograd import Variable
 import librosa
@@ -209,6 +209,14 @@ class DatasetType(Enum):
     DEV = 1
     TEST = 2
 
+
+def print_eval(name, scores, labels, loss, end="\n"):
+    batch_size = labels.size(0)
+    accuracy = (torch.max(scores, 1)[1].view(batch_size).data == labels.data).sum() / batch_size
+    loss = loss.cpu().data.numpy()[0]
+    #print("{} accuracy: {:>5}, loss: {:<25}".format(name, accuracy, loss), end=end)
+    return accuracy
+
 class SpeechDataset(data.Dataset):
     LABEL_SILENCE = "__silence__"
     LABEL_UNKNOWN = "__unknown__"
@@ -293,6 +301,48 @@ class SpeechDataset(data.Dataset):
         data = torch.from_numpy(preprocess_audio(data, self.n_mels, self.filters))
         self._audio_cache[example] = data
         return data
+
+    def predict(self, model, config, batch_size = 16, shuffle=False):
+        model.eval()
+        accs = []
+        losses = []
+        all_scores = []
+        all_labels = []
+        criterion = nn.CrossEntropyLoss()
+        data_loader = data.DataLoader(self, batch_size=min(len(self), batch_size), shuffle=shuffle)
+
+        for model_in, labels in tqdm(data_loader):
+            model_in = Variable(model_in, requires_grad=False)
+            if not config["no_cuda"]:
+                model_in = model_in.cuda()
+                labels = labels.cuda()
+            scores = model(model_in)
+            predictions = F.softmax(scores.squeeze(0).cpu()).data.numpy()
+            all_scores.append(predictions)
+            #all_scores.append(scores.cpu().data.numpy())
+            all_labels.append(labels.cpu().numpy())
+        
+            labels = Variable(labels, requires_grad=False)
+            loss = criterion(scores, labels)
+            loss_numeric = loss.cpu().data.numpy()[0]
+            accs.append(print_eval("dev", scores, labels, loss))
+            losses.append(loss.cpu().data.numpy()[0])
+        vacc = float(np.mean(accs))
+        vloss= float(np.mean(losses))
+        print(vacc, vloss)
+        all_scores = np.concatenate(all_scores,axis=0)
+        all_labels = np.concatenate(all_labels, axis=0)
+        all_preds = np.argmax(all_scores, axis=1)
+        all_sl = np.concatenate([np.expand_dims(all_labels,axis=-1), np.expand_dims(all_preds, axis=-1), all_scores], axis=-1)
+        #np.savetxt(log_dir+'/val{}.csv'.format(epoch_idx), all_sl, delimiter=',', fmt='%.3f')
+    
+        #print("final dev accuracy: {}".format(vacc))
+        #print("final dev loss: {}".format(vloss))
+        return all_preds
+
+    def set_predict(self, model, config, batch_size = 16, shuffle=False):
+        all_preds = self.predict(model, config, batch_size, shuffle)
+        self.audio_labels = all_preds.tolist()[:len(self.audio_labels)]
 
     @classmethod
     def splits(cls, config):

@@ -4,6 +4,7 @@ import os
 import random
 import sys
 import csv
+from torch.utils.data import ConcatDataset
 
 from torch.autograd import Variable
 import numpy as np
@@ -150,21 +151,31 @@ def evaluate(config, model=None, test_loader=None, epoch=0, log_dir=None):
 
 def train(config):
     log_dir = config["log_dir"]
-    os.mkdir(log_dir)
+    if log_dir!="tmp" : os.mkdir(log_dir)
     train_set, dev_set, test_set = mod.SpeechDataset.splits(config)
+
+    
+    
     model = config["model_class"](config)
     if config["input_file"]:
         model.load(config["input_file"])
     if not config["no_cuda"]:
         torch.cuda.set_device(config["gpu_no"])
         model.cuda()
+    
     optimizer = torch.optim.SGD(model.parameters(), lr=config["lr"][0], nesterov=config["use_nesterov"], weight_decay=config["weight_decay"], momentum=config["momentum"])
     schedule_steps = config["schedule"]
     schedule_steps.append(np.inf)
     sched_idx = 0
     criterion = nn.CrossEntropyLoss()
     max_acc = 0
+    if config["psuedo"]:
+        train_set1, dev_set1, test_set1 = mod.SpeechDataset.splits(config)
+        dev_set1.set_predict(model, config)
+        test_set1.set_predict(model, config)
+        train_set = ConcatDataset([train_set, dev_set1, test_set1])
 
+    print("len", len(train_set), len(dev_set), len(test_set))
     train_loader = data.DataLoader(train_set, batch_size=config["batch_size"], shuffle=True, drop_last=True)
     dev_loader = data.DataLoader(dev_set, batch_size=min(len(dev_set), 16), shuffle=False)
     test_loader = data.DataLoader(test_set, batch_size=min(len(test_set), 16), shuffle=False)
@@ -274,10 +285,11 @@ def main():
     print(parser)
     parser.add_argument("--model", choices=[x.value for x in list(mod.ConfigType)], default="cnn-trad-pool2", type=str)
     parser.add_argument("--mode", choices=["train", "evaluate", "submit"], default="train", type=str)
+    parser.add_argument("--psuedo",  default=False, type=bool)
     config, _ = parser.parse_known_args()
     print(config)
 
-    global_config = dict(test_folder="test", mode=config.mode, log_dir="tmp", no_cuda=False, n_epochs=500, lr=[0.001], schedule=[np.inf], batch_size=64, dev_every=10, seed=0,
+    global_config = dict(psuedo= config.psuedo, test_folder="test", mode=config.mode, log_dir="tmp", no_cuda=False, n_epochs=500, lr=[0.001], schedule=[np.inf], batch_size=64, dev_every=10, seed=0,
         use_nesterov=False, input_file="", output_file=output_file, gpu_no=1, cache_size=32768, momentum=0.9, weight_decay=0.00001)
     mod_cls = mod.find_model(config.model)
     builder = ConfigBuilder(
