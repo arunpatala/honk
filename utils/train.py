@@ -4,6 +4,8 @@ import os
 import random
 import sys
 import csv
+import pdb
+
 from torch.utils.data import ConcatDataset
 
 from torch.autograd import Variable
@@ -100,7 +102,6 @@ def submit(config, model=None, test_loader=None, output="sub.csv", log_dir=None)
             total += model_in.size(0)
 
 
-
 def evaluate(config, model=None, test_loader=None, epoch=0, log_dir=None):
     if not test_loader:
         _, _, test_set = mod.SpeechDataset.splits(config)
@@ -113,6 +114,54 @@ def evaluate(config, model=None, test_loader=None, epoch=0, log_dir=None):
     if not config["no_cuda"]:
         torch.cuda.set_device(config["gpu_no"])
         model.cuda()
+    #model = nn.Sequential(*list(model.children())[:-1])
+    print(model)
+
+    model.eval()
+    total = 0
+    all_scores = []
+    all_fcs = []
+    all_labels = []
+    for model_in, labels in tqdm(test_loader):
+        #print(model_in.size())
+        model_in = Variable(model_in, requires_grad=False)
+        if not config["no_cuda"]:
+            model_in = model_in.cuda()
+            labels = labels.cuda()
+        scores = model(model_in)
+        predictions = F.softmax(scores.squeeze(0).cpu()).data.numpy()
+        all_scores.append(predictions)
+        all_fcs.append(model.fc.squeeze(0).cpu().data.numpy())
+        all_labels.append(labels.cpu().numpy())
+        total += model_in.size(0)
+    all_scores = np.concatenate(all_scores,axis=0)
+    all_preds = np.argmax(all_scores, axis=1)
+    all_fcs = np.concatenate(all_fcs,axis=0)    
+    all_labels = np.concatenate(all_labels, axis=0)
+    
+    all_sl = np.concatenate([np.expand_dims(all_labels,axis=-1), np.expand_dims(all_preds,axis=-1), all_scores, all_fcs], axis=-1)
+    np.savetxt(log_dir+'/fc{}.csv'.format(epoch), all_sl, delimiter=',', fmt='%.3f')
+        
+    #print("final test loss: {}".format(np.mean(losses)))
+    #print("final test accuracy: {}".format(sum(results) / total))
+    #return sum(results) / total
+
+
+def evaluate2(config, model=None, test_loader=None, epoch=0, log_dir=None):
+    if not test_loader:
+        _, _, test_set = mod.SpeechDataset.splits(config)
+        test_loader = data.DataLoader(test_set, batch_size=len(test_set))
+    if not config["no_cuda"]:
+        torch.cuda.set_device(config["gpu_no"])
+    if not model:
+        model = config["model_class"](config)
+        model.load(config["input_file"])
+    if not config["no_cuda"]:
+        torch.cuda.set_device(config["gpu_no"])
+        model.cuda()
+    #model = nn.Sequential(*list(model.children())[:-1])
+    #print(model)
+
     model.eval()
     criterion = nn.CrossEntropyLoss()
     results = []
@@ -154,14 +203,14 @@ def train(config):
     if log_dir!="tmp" : os.mkdir(log_dir)
     train_set, dev_set, test_set = mod.SpeechDataset.splits(config)
 
-    
+
     model = config["model_class"](config)
     if config["input_file"]:
         model.load(config["input_file"])
     if not config["no_cuda"]:
         torch.cuda.set_device(config["gpu_no"])
         model.cuda()
-    
+
     optimizer = torch.optim.SGD(model.parameters(), lr=config["lr"][0], nesterov=config["use_nesterov"], weight_decay=config["weight_decay"], momentum=config["momentum"])
     schedule_steps = config["schedule"]
     schedule_steps.append(np.inf)
@@ -187,6 +236,7 @@ def train(config):
         losses = []
         all_scores = []
         all_labels = []
+        #print(model)
         for batch_idx, (model_in, labels) in enumerate(tqdm(train_loader)):
             model.train()
             optimizer.zero_grad()
@@ -322,8 +372,8 @@ def main():
             torch.cuda.set_device(config["gpu_no"])
             model.cuda()
         #print(a+b)
-        test_loader = data.DataLoader(test_set, batch_size=min(len(test_set), 16), shuffle=False)
-        evaluate(config, model, test_loader, epoch="eval", log_dir=log_dir)
+        loader = data.DataLoader(dev_set, batch_size=min(len(test_set), 16), shuffle=False)
+        evaluate(config, model, loader, epoch="deveval", log_dir=log_dir)
         #evaluate(config)
     elif config["mode"] == "submit":
         log_dir = config["log_dir"]

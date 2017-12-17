@@ -119,6 +119,7 @@ class SpeechResModel(SerializableModule):
                 x = getattr(self, "bn{}".format(i))(x)
         x = x.view(x.size(0), x.size(1), -1) # shape: (batch, feats, o3)
         x = torch.mean(x, 2)
+        self.fc = x
         return self.output(x)
 
 class SpeechModel(SerializableModule):
